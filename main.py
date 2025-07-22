@@ -8,6 +8,8 @@ import random
 import string
 import time
 import re
+import os
+from os import environ
 
 # Your Telegram bot credentials
 API_ID = int(environ.get("API_ID", "22727464"))
