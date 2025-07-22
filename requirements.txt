@@ -1,5 +1,5 @@
-pyrogram
-tgcrypto
-requests
-m3u8
-pycryptodome
+pyrogram==2.0.106
+tgcrypto==1.2.5
+fastapi==0.110.2
+uvicorn==0.29.0
+requests==2.31.0

@@ -1,14 +1,22 @@
 services:
   - type: web
-    name: classplus-drm-bot
-    env: python
+    name: cp-token
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    repo: https://github.com/makwanaram/sample-app
+    branch: master
+    autoDeploy: false
     envVars:
+      - key: BOT_TOKEN
+        sync: false
       - key: API_ID
         sync: false
       - key: API_HASH
         sync: false
-      - key: BOT_TOKEN
+      - key: OWNER
         sync: false
+      - key: CREDIT
+        sync: false
+      #- key: WEBHOOK
+        #sync: false
+      - key: PORT
+        value: 8000  # Default port value, update if needed

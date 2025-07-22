@@ -1,66 +1,93 @@
-import os
-import requests
-import m3u8
-import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from Crypto.Cipher import AES
+from fastapi import FastAPI
+import uvicorn
+import threading
+import requests
+import random
+import string
+import time
+import re
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
+# Your Telegram bot credentials
+API_ID = int(environ.get("API_ID", "22727464"))
+API_HASH = environ.get("API_HASH", "f0e595a263c89aa17f6571b8af296ced")
+BOT_TOKEN = environ.get("BOT_TOKEN", "7983413191:AAGMbDb9bqTTT68pMjjRd0Q4Y6y4UCyHITo")
+# API_ID = 21601817
+# API_HASH = "8d0fe8b5ae8149455681681253b2ef17"
+# BOT_TOKEN = "8159627489:AAELW-QwJTInrSd55f5vZQSJvjzZz7zVvkg"  # ← यहाँ अपना Bot Token डालो
 
-bot = Client("drm_bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
+bot = Client("classplus_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+web = FastAPI()
+user_state = {}
+
+# Generate temp email
+def generate_email():
+    login = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    domain = "1secmail.com"
+    return f"{login}@{domain}", login, domain
+
+def check_inbox(login, domain):
+    url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={login}&domain={domain}"
+    return requests.get(url).json()
+
+def read_message(login, domain, msg_id):
+    url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={login}&domain={domain}&id={msg_id}"
+    return requests.get(url).json()
+
+def extract_otp(text):
+    found = re.findall(r'\b\d{4,8}\b', text)
+    return found[0] if found else None
 
 @bot.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply("👋 Send /download <m3u8_url> to download Classplus DRM video.")
+    email, login, domain = generate_email()
+    user_state[message.from_user.id] = {
+        "email": email, "login": login, "domain": domain
+    }
+    await message.reply_text(f"📧 Use this email to request OTP:\n`{email}`", parse_mode="markdown")
 
-@bot.on_message(filters.command("download"))
-async def download(client, message: Message):
-    if len(message.command) < 2:
-        return await message.reply("❌ Please provide the `.m3u8` link.")
+    # Poll inbox
+    for _ in range(30):
+        inbox = check_inbox(login, domain)
+        if inbox:
+            msg = read_message(login, domain, inbox[0]["id"])
+            otp = extract_otp(msg["body"])
+            if otp:
+                await message.reply_text(f"✅ OTP Received: `{otp}`", parse_mode="markdown")
 
-    m3u8_url = message.command[1]
-    await message.reply("⏳ Processing...")
+                headers = {
+                    "User-Agent": "okhttp/3.12.1",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "deviceId": ''.join(random.choices(string.ascii_lowercase + string.digits, k=16)),
+                    "otp": otp,
+                    "email": email
+                }
+                try:
+                    res = requests.post("https://api.classplusapp.com/v2/user/loginWithEmail", json=payload, headers=headers)
+                    if res.status_code == 200 and "data" in res.json():
+                        token = res.json()["data"]["token"]
+                        await message.reply_text(f"🟢 <b>Access Token:</b>\n<code>{token}</code>", parse_mode="html")
+                    else:
+                        await message.reply_text("❌ OTP accepted but failed to generate token.")
+                except Exception as e:
+                    await message.reply_text(f"⚠️ Error: {str(e)}")
+                return
+        time.sleep(3)
+    await message.reply("⌛ Timeout: No OTP received in 90 seconds.")
 
-    try:
-        os.makedirs("segments", exist_ok=True)
-        playlist = m3u8.load(m3u8_url)
-        key_url = playlist.keys[0].uri
-        key = requests.get(key_url).content
-        segments = playlist.segments
+@web.get("/")
+def root():
+    return {"status": "Bot is alive", "message": "Use me on Telegram!"}
 
-        for i, segment in enumerate(segments):
-            uri = segment.absolute_uri
-            iv = segment.key.iv
-            if iv is None:
-                iv = (i+1).to_bytes(16, byteorder='big')
-            else:
-                iv = bytes.fromhex(iv.replace("0x", "").zfill(32))
-            data = requests.get(uri).content
-            cipher = AES.new(key, AES.MODE_CBC, iv)
-            decrypted = cipher.decrypt(data)
-            with open(f"segments/seg_{i:05d}.ts", "wb") as f:
-                f.write(decrypted)
+def run_bot():
+    bot.run()
 
-        with open("output.ts", "wb") as merged:
-            for i in range(len(segments)):
-                with open(f"segments/seg_{i:05d}.ts", "rb") as f:
-                    merged.write(f.read())
+# Start bot in background
+threading.Thread(target=run_bot).start()
 
-        os.system("ffmpeg -y -i output.ts -c copy final.mp4")
-        await message.reply_document("final.mp4", caption="✅ Here is your video.")
-
-    except Exception as e:
-        await message.reply(f"❌ Error: {str(e)}")
-    finally:
-        for f in ["output.ts", "final.mp4"]:
-            if os.path.exists(f):
-                os.remove(f)
-        if os.path.exists("segments"):
-            for f in os.listdir("segments"):
-                os.remove(f"segments/{f}")
-            os.rmdir("segments")
-
-bot.run()
+# Run FastAPI
+if __name__ == "__main__":
+    uvicorn.run(web, host="0.0.0.0", port=8000)
