@@ -1,95 +1,73 @@
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from fastapi import FastAPI
-import uvicorn
-import threading
-import requests
-import random
-import string
-import time
-import re
 import os
-from os import environ
+from config import Config
+from pyrogram import Client, idle
+import asyncio, logging
+import tgcrypto
+from pyromod import listen
+from logging.handlers import RotatingFileHandler
+import traceback
+from helper import log_error_to_telegram
 
-# Your Telegram bot credentials
-API_ID = int(environ.get("API_ID", "22727464"))
-API_HASH = environ.get("API_HASH", "f0e595a263c89aa17f6571b8af296ced")
-BOT_TOKEN = environ.get("BOT_TOKEN", "7983413191:AAGMbDb9bqTTT68pMjjRd0Q4Y6y4UCyHITo")
-# API_ID = 21601817
-# API_HASH = "8d0fe8b5ae8149455681681253b2ef17"
-# BOT_TOKEN = "8159627489:AAELW-QwJTInrSd55f5vZQSJvjzZz7zVvkg"  # ← यहाँ अपना Bot Token डालो
+LOGGER = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(name)s - %(message)s",
+    datefmt="%d-%b-%y %H:%M:%S",
+    handlers=[
+        RotatingFileHandler(
+            "log.txt", maxBytes=5000000, backupCount=10
+        ),
+        logging.StreamHandler(),
+    ],
+)
 
-bot = Client("classplus_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-web = FastAPI()
-user_state = {}
+# Auth Users
+AUTH_USERS = [ int(chat) for chat in Config.AUTH_USERS.split(",") if chat != '']
 
-# Generate temp email
-def generate_email():
-    login = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-    domain = "1secmail.com"
-    return f"{login}@{domain}", login, domain
+# Prefixes 
+prefixes = ["/", "~", "?", "!"]
 
-def check_inbox(login, domain):
-    url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={login}&domain={domain}"
-    return requests.get(url).json()
+plugins = dict(root="plugins")
 
-def read_message(login, domain, msg_id):
-    url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={login}&domain={domain}&id={msg_id}"
-    return requests.get(url).json()
+async def initialize_bot():
+    try:
+        bot = Client(
+            "StarkBot",
+            bot_token=Config.BOT_TOKEN,
+            api_id=Config.API_ID,
+            api_hash=Config.API_HASH,
+            sleep_threshold=20,
+            plugins=plugins,
+            workers=50
+        )
+        return bot # Return the bot instance if initialization is successful
+    except Exception as e:
+        LOGGER.error(f"Error during bot initialization: {e}")
+        try:
+           await log_error_to_telegram(LOGGER, None, f"Error during bot initialization: {traceback.format_exc()}") # Pass None for bot if it failed to initialize
+        except Exception as log_e:
+           LOGGER.error(f"Failed to send initialization error to Telegram: {log_e}")
+        return None # Return None if initialization failed
 
-def extract_otp(text):
-    found = re.findall(r'\b\d{4,8}\b', text)
-    return found[0] if found else None
+async def main():
+    bot = await initialize_bot() # Await the initialization
+    if bot is None:
+        LOGGER.error("Bot initialization failed. Exiting.")
+        return # Exit if bot initialization failed
 
-@bot.on_message(filters.command("start"))
-async def start(client, message: Message):
-    email, login, domain = generate_email()
-    user_state[message.from_user.id] = {
-        "email": email, "login": login, "domain": domain
-    }
-    await message.reply_text(f"📧 Use this email to request OTP:\n`{email}`", parse_mode="markdown")
+    try:
+        await bot.start()
+        bot_info  = await bot.get_me()
+        LOGGER.info(f"<--- @{bot_info.username} Started (c) STARKBOT --->")
+        await idle()
+    except Exception as e:
+        LOGGER.error(f"Error during bot execution: {e}")
+        try:
+           await log_error_to_telegram(LOGGER, bot, f"Error during bot execution: {traceback.format_exc()}")
+        except Exception as log_e:
+           LOGGER.error(f"Failed to send execution error to Telegram: {log_e}")
 
-    # Poll inbox
-    for _ in range(30):
-        inbox = check_inbox(login, domain)
-        if inbox:
-            msg = read_message(login, domain, inbox[0]["id"])
-            otp = extract_otp(msg["body"])
-            if otp:
-                await message.reply_text(f"✅ OTP Received: `{otp}`", parse_mode="markdown")
+    LOGGER.info(f"<---Bot Stopped-->")
 
-                headers = {
-                    "User-Agent": "okhttp/3.12.1",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "deviceId": ''.join(random.choices(string.ascii_lowercase + string.digits, k=16)),
-                    "otp": otp,
-                    "email": email
-                }
-                try:
-                    res = requests.post("https://api.classplusapp.com/v2/user/loginWithEmail", json=payload, headers=headers)
-                    if res.status_code == 200 and "data" in res.json():
-                        token = res.json()["data"]["token"]
-                        await message.reply_text(f"🟢 <b>Access Token:</b>\n<code>{token}</code>", parse_mode="html")
-                    else:
-                        await message.reply_text("❌ OTP accepted but failed to generate token.")
-                except Exception as e:
-                    await message.reply_text(f"⚠️ Error: {str(e)}")
-                return
-        time.sleep(3)
-    await message.reply("⌛ Timeout: No OTP received in 90 seconds.")
-
-@web.get("/")
-def root():
-    return {"status": "Bot is alive", "message": "Use me on Telegram!"}
-
-def run_bot():
-    bot.run()
-
-# Start bot in background
-threading.Thread(target=run_bot).start()
-
-# Run FastAPI
 if __name__ == "__main__":
-    uvicorn.run(web, host="0.0.0.0", port=8000)
+    asyncio.get_event_loop().run_until_complete(main())
